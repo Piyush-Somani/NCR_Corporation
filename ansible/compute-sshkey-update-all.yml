@@ -1,0 +1,9 @@
+- name: Remove Compute ssh Metadata key values
+  hosts: localhost
+  connection: local
+  vars:
+    compute_filter: "{{ compute_filter }}"
+  tasks:
+    - include_role:
+        name: compute_ssh_key
+        tasks_from: update_all
