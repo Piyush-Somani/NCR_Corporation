@@ -1,0 +1,75 @@
+---
+- name: Add Compute ssh Metadata key values
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  vars:
+    compute_filter: "{{ compute_filter }}"
+  tasks:
+  - name: Provision SSH Key on Resource
+    include_role:
+      name: compute_ssh_key
+      tasks_from: update_all
+
+- name: Install/Configure Dynatrace OneAgent
+  hosts:
+    - "{{ group_bastion | default('_bastion') }}"
+    - "{{ group_cassandra | default('_cassandra') }}"
+    - "{{ group_elasticsearch | default('_elasticsearch') }}"
+    - "{{ group_kafka | default('_kafka') }}"
+    - "{{ group_jmeter | default('_jmeter') }}"
+    - "{{ group_nfsserver | default('_nfsserver') }}"
+    - "{{ group_mzero | default('_mzero') }}"
+    - "{{ group_jenkins | default('_sredev_cd_jenkins') }}"
+    - "{{ group_jenkinscov | default('_sredev_cd_jenkinscov') }}"
+    - "{{ group_jenkinscab | default('_sredev_cd_jenkinscab') }}"
+    - "{{ group_jenkinsperf | default('_sredev_cd_jenkinsperf') }}"
+    - "!_dynatrace_activegate"
+  gather_facts: no
+  vars:
+    dynatrace_configuration:
+      tags:
+        management_id: "{{ lookup('env', 'GLOBAL_DEPLOYMENT_ID') }}{{ component_suffix }}"
+      metadata:
+        environment: "{{ lookup('env', 'GLOBAL_DEPLOYMENT_CERTIFICATE') }}"
+    dynatrace_oneagent_environment_id: "{{ lookup('env', 'DYNATRACE_TENANT_ID') }}"
+    dynatrace_oneagent_api_token: "{{ lookup('env', 'DYNATRACE_PAAS_TOKEN') }}"
+    jfrog_token: "{{ lookup('env', 'JFROG_PASSWORD') }}"
+  tasks:
+    - name: Install/Configure Dynatrace OneAgent
+      include_role:
+        name: dynatrace_oneagent
+        tasks_from: "{{ dynatrace_action | default('main') }}.yml"
+      when: component_action == "apply"
+
+
+- name: Uninstall Dynatrace OneAgent
+  hosts: 
+    - "{{ group_bastion | default('_bastion') }}"
+    - "{{ group_cassandra | default('_cassandra') }}"
+    - "{{ group_elasticsearch | default('_elasticsearch') }}"
+    - "{{ group_kafka | default('_kafka') }}"
+    - "{{ group_jmeter | default('_jmeter') }}"
+    - "{{ group_nfsserver | default('_nfsserver') }}"
+    - "{{ group_mzero | default('_mzero') }}"
+    - "{{ group_jenkins | default('_sredev_cd_jenkins') }}"
+    - "{{ group_jenkinscov | default('_sredev_cd_jenkinscov') }}"
+    - "{{ group_jenkinscab | default('_sredev_cd_jenkinscab') }}"
+    - "{{ group_jenkinsperf | default('_sredev_cd_jenkinsperf') }}"
+    - "!_dynatrace_activegate"
+  gather_facts: no
+  vars:
+    dynatrace_configuration:
+      tags:
+        deployment_id: "{{ lookup('env', 'GLOBAL_DEPLOYMENT_ID') }}{{ component_suffix }}"
+      metadata:
+        environment: "{{ lookup('env', tenantID | default('') ~ 'GLOBAL_DEPLOYMENT_CERTIFICATE') }}"
+    dynatrace_oneagent_environment_id: "{{ lookup('env', 'DYNATRACE_TENANT_ID') }}"
+    dynatrace_oneagent_api_token: "{{ lookup('env', 'DYNATRACE_PAAS_TOKEN') }}"
+  tasks:
+    - name: Uninstall dynatrace
+      include_role:
+        name: dynatrace_oneagent
+        tasks_from: "uninstall.yml"
+      when: component_action == "destroy"
+ 
