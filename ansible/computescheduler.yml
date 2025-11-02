@@ -1,0 +1,16 @@
+---
+
+- name: Create ComputeScheduler
+  hosts: localhost
+  roles:
+    - terraform
+  environment:
+    TF_VAR_component_suffix: "{{ component_suffix }}"
+    TF_VAR_scaleup_schedule: "{{ scaleup_schedule | default('', True) }}"
+    TF_VAR_scaledown_schedule: "{{ scaledown_schedule | default('', True) }}"
+  vars:
+    component_type: computescheduler
+    tf_action: "{{ component_action }}"
+    tfvar_environment: "{{ tfvar_environment }}"
+    component_name: "{{ component_name }}"
+    tfvar_scheduler_group: "{{  scheduler_group | default('default') }}"
