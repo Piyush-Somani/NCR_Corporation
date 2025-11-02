@@ -1,0 +1,92 @@
+---
+
+## The below playbooks to unhook the glb stale backend service
+- name: Patch the GLB URL map for stale services
+  hosts: localhost
+  gather_facts: no
+  tasks:
+  - name: Patch the URL map for stale services
+    include_role:
+      name: global_loadbalancer_initialize
+      tasks_from: glb_patch_url_map.yml
+    vars:
+      tenant_id: "{{ tenantID | default('') }}"
+      redirect_http_to_https: false
+    when: component_action == "destroy"
+
+- name: Executing plan to cleanup GLB backend services
+  import_playbook: global-loadbalancer-provision.yml
+  vars:
+    tf_action: "plan"
+    component_type: "global_loadbalancer"
+    component_name_override: "global_loadbalancer{{ tenantID | default('') }}"
+    override_bucket_deployment_path: "terraform/{{ deployment_repository_name }}/{{ deployment_branch_name }}/{{ gcp_project }}/global_loadbalancer{{ tenantID | default('') }}/{{ component_tfvars_file }}"
+    primary_region_var: "{{ primary_region_value | default('global', True) }}"
+    switch_var: "{{ switch_secondary_value | default('disabled', True) }}"
+    tenant_id: "{{ tenantID | default('') }}"
+    redirect_http_to_https: false
+  when: component_action == "destroy" and (global_loadbalancer_exists is defined and global_loadbalancer_exists != "")
+
+- name: Executing apply to cleanup GLB backend services
+  import_playbook: global-loadbalancer-provision.yml
+  vars:
+    tf_action: "apply"
+    component_type: "global_loadbalancer"
+    component_name_override: "global_loadbalancer{{ tenantID | default('') }}"
+    override_bucket_deployment_path: "terraform/{{ deployment_repository_name }}/{{ deployment_branch_name }}/{{ gcp_project }}/global_loadbalancer{{ tenantID | default('') }}/{{ component_tfvars_file }}"
+    primary_region_var: "{{ primary_region_value | default('global', True) }}"
+    switch_var: "{{ switch_secondary_value | default('disabled', True) }}"
+    tenant_id: "{{ tenantID | default('') }}"
+    redirect_http_to_https: false
+  when: component_action == "destroy" and (global_loadbalancer_exists is defined and global_loadbalancer_exists != "")
+
+## The below playbook is to unhook the rlb stale backend services
+- name: Patch the RLB URL map for stale services
+  hosts: localhost
+  gather_facts: no
+  vars:
+    tf_var_file: "{{ lookup('env', 'WORKSPACE') }}/terraform/components/_environment/{{ tfvar_environment }}"
+    region: "{{ (lookup('file', '{{ tf_var_file }}') | regex_search('region\\s+=\\s+\\\"(.*)\\\"', '\\1')) }}"
+  tasks:
+  - name: Patch the URL map for stale services
+    include_role:
+      name: global_loadbalancer_initialize
+      tasks_from: rlb_patch_url_map.yml
+    vars:
+      tenant_id: "{{ tenantID | default('') }}"
+    when: component_action == "destroy"
+
+- name: Executing plan to cleanup RLB backend services
+  import_playbook: regional-loadbalancer-provision.yml
+  vars:
+    tf_action: "plan"
+    component_type: "regional_loadbalancer"
+    component_name_override: "{{ regionalloadbalancer }}{{ tenantID | default('') }}"
+    override_bucket_deployment_path: "terraform/{{ deployment_repository_name }}/{{ deployment_branch_name }}/{{ gcp_project }}/{{ regionalloadbalancer }}{{ tenantID | default('') }}/{{ component_tfvars_file }}"
+    tenant_id: "{{ tenantID | default('') }}"
+    tfvar_rlb_subnetwork_override: "{{ rlb_subnetwork_override }}"
+  when: component_action == "destroy" and regional_loadbalancer_exists != ""
+
+- name: Executing apply to cleanup RLB backend services
+  import_playbook: regional-loadbalancer-provision.yml
+  vars:
+    tf_action: "apply"
+    component_type: "regional_loadbalancer"
+    component_name_override: "{{ regionalloadbalancer }}{{ tenantID | default('') }}"
+    override_bucket_deployment_path: "terraform/{{ deployment_repository_name }}/{{ deployment_branch_name }}/{{ gcp_project }}/{{ regionalloadbalancer }}{{ tenantID | default('') }}/{{ component_tfvars_file }}"
+    tenant_id: "{{ tenantID | default('') }}"
+    tfvar_rlb_subnetwork_override: "{{ rlb_subnetwork_override }}"
+  when: component_action == "destroy" and regional_loadbalancer_exists != ""
+
+- name: Cleanup of State network endpoint groups
+  hosts: localhost
+  gather_facts: no
+  vars:
+    tf_var_file: "{{ lookup('env', 'WORKSPACE') }}/terraform/components/_environment/{{ tfvar_environment }}"
+    region: "{{ (lookup('file', '{{ tf_var_file }}') | regex_search('region\\s+=\\s+\\\"(.*)\\\"', '\\1'))[0] }}"
+    tenant_id: "{{ tenantID | default('') }}"
+  tasks:
+  - name: Delete the network endpoint groups
+    include_role:
+      name: network_endpoint
+    when: component_action == "destroy" and tenant_id == ""
