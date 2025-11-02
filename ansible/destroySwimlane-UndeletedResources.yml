@@ -1,0 +1,23 @@
+- name: Running Gcloud Command to identify undeleted resources After Successfull Run of Destroy Swimlane
+  hosts: localhost
+  connection: local
+  vars:
+    project_id: "{{ lookup('env','GLOBAL_GCP_PROJECT') }}"
+    deployment_id: "{{ lookup('env','GLOBAL_DEPLOYMENT_ID') }}"
+  tasks:
+
+    - name: GCP_resources_result
+      shell: |
+        gcloud asset search-all-resources --scope=projects/{{ project_id }} \
+          --query='*{{ deployment_id }}*' --filter='labels.deployment_id={{ deployment_id }}' --format="csv(name,assetType)" \
+          | awk -F "," 'BEGIN{print "Following Resources not deleted from GCP Console:"}{sep=NR==1?"||":"|";split($1,name,"/");split($2,asset_type,"/");print sep name[length(name)] sep asset_type[length(asset_type)] sep}' \
+          | grep -v SecretVersion
+      register: resources_result
+    
+    - name: Redirecting resources_result to txt file
+      copy:
+        content: "{{ resources_result.stdout }}" 
+        dest: "{{lookup('env', 'WORKSPACE')}}/jira_incident_description.txt"
+      register: result_collection
+     # failed_when: destroyAction == "DestroySwimlane" and resources_result.stdout_lines|length > 1
+      when: resources_result.stdout_lines|length > 1
