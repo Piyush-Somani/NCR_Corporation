@@ -1,0 +1,106 @@
+---
+- import_playbook: set-infra-version.yml
+  vars:
+    component_action: "{{ component_action }}"
+    resource_group: "{{ group_bastion | default('_bastion') }}"
+
+- name: Terraform Resource
+  hosts: localhost
+  environment:
+    TF_VAR_bastion_private: "{{ (lookup('env', 'BASTION_IP_TYPE') | default('public') == 'private') | ternary('true', 'false') }}"
+  tasks:
+    - name:
+      include_role:
+        name: terraform
+      when: should_run_tf
+      vars:
+        component_type: bastion
+        tf_action: "{{ component_action }}"
+        tfvar_environment: "{{ tfvar_environment }}"
+        component_name: "{{ component_name }}"
+        tfvar_scheduler_group: "{{ scheduler_group | default('default') }}"
+        tfvar_image_name: "{{ tfvar_image_name }}"
+
+# Setup SSH Credentials / Wait for required Nodes to be SSH Available
+
+# checks if python3 is available on localhost (ex onprem)
+# the check in compute_ssh_key only checks if on compute
+# must be called for anything run on onprem
+- name: Check if python3 available on localhost
+  hosts: localhost
+  tasks:
+    - name: set python2 only if python3 not installed on local
+      include_role:
+        name: python3
+        tasks_from: localCheck
+      when: hostvars['localhost'].should_deploy
+
+- name: Authenticate To Playbook Dependencies And Gather Facts
+  hosts: "{{ group_bastion | default('_bastion') }}"
+  gather_facts: no
+  tasks:
+  - name: Provision SSH Key on Resource
+    include_role:
+      name: compute_ssh_key
+    when: component_action == "apply"
+  
+  - name: Update the Centos Repo
+    include_role:
+      name: compute_system_patch
+      tasks_from: update_base_repo.yml
+    when: component_action == "apply" and ansible_distribution == "CentOS"
+
+# Standard Imaging Required for all NCR Computes
+- name: Provision Base Image
+  hosts: "{{ group_bastion | default('_bastion') }}"
+  any_errors_fatal: true
+  gather_facts: no
+  become: yes
+  tasks:
+    - meta: end_host
+      when: not hostvars['localhost'].should_deploy
+
+    - name: Install python3
+      include_role:
+        name: python3
+      vars:
+        machine: bastion
+
+    - block:
+        - name: Provision OS Hardening
+          include_role:
+            name: os_hardening
+
+        - name: Install Google Agent
+          include_role:
+            name: google_agent_deploy
+      when: not tfvar_image_name is search("finsre")
+
+    - name: Install Mcafee Solidcore
+      include_role:
+        name: mcafee_solidcore
+      when: mcafee_solidcore_deployment is defined and mcafee_solidcore_deployment == "true"
+
+    - name: bastion_provision
+      include_role:
+       name: bastion_provision
+
+    - name: Installation & configuration of Newman
+      include_role:
+        name: newman
+        tasks_from: newman-install.yml
+      when: newman_install is defined and newman_install == "true"
+
+
+- name: Label Resource
+  hosts: "{{ group_bastion | default('_bastion') }}"
+  gather_facts: no
+  tasks:
+    - name: Label resource version
+      include_role:
+        name: infrastructure_version
+        apply:
+          delegate_to: localhost
+      vars:
+        instance_type: "compute"
+      when: hostvars['localhost'].should_deploy
