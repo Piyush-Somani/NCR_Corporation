@@ -1,0 +1,240 @@
+---
+- import_playbook: set-infra-version.yml
+  vars:
+    component_action: "{{ component_action }}"
+    component_suffix: "{{ component_suffix }}"
+    resource_group: "{{ group_gke | default('_gke') }}"
+    resource_type: "gke"
+
+# Setup SSH Credentials / Wait for required Nodes to be SSH Available
+
+# checks if python3 is available on localhost (ex onprem)
+# the check in compute_ssh_key only checks if on compute
+# must be called for anything run on onprem
+- name: Check if python3 available on localhost
+  hosts: localhost
+  tasks:
+    - name: set python2 only if python3 not installed on local
+      include_role:
+        name: python3
+        tasks_from: localCheck
+
+- name: Authenticate To Playbook Dependencies And Gather Facts
+  hosts: "{{ group_bastion | default('_bastion') }}"
+  gather_facts: no
+  tasks:
+  - name: Provision SSH Key on Resource
+    include_role:
+      name: compute_ssh_key
+    when: component_action == "destroy" or component_action == "apply"
+
+- name: Provision Bastion Proxy
+  hosts: "{{ group_bastion | default('_bastion') }}"
+  gather_facts: no
+  tasks:
+    - block:
+        - name: Open proxy to gke from bastion
+          include_role:
+            name: bastion_gke_proxy
+      when:
+        - component_action == "destroy"
+      ignore_errors: yes
+
+- name: Execute helm & Clean Bastion Sock5 Proxy
+  hosts: "{{ group_gke | default('_gke') }}"
+  any_errors_fatal: true
+  connection: local
+  vars:
+    namespace: kube-system
+    env_vars:
+      http_proxy: "{{ hostvars[groups[group_bastion | default('_bastion')][0]]['BASTION_PROXY'] }}"
+      https_proxy: "{{ hostvars[groups[group_bastion | default('_bastion')][0]]['BASTION_PROXY'] }}"
+      KUBECONFIG: "{{lookup('env', 'WORKSPACE')}}/kubeconfig{{ tenantID | default('') }}{{ component_suffix | default('') }}"
+  tasks:
+    - meta: end_host
+      when: not hostvars['localhost'].should_deploy
+
+    - block:
+        - name: Fetch Kubeconfig
+          include_role:
+            name: helm
+            tasks_from: auth-gke-cluster
+          run_once: true
+
+        - name: Delete pdbs
+          include_role:
+            name: gke_system_patch
+            tasks_from: delete-pdb.yml
+          run_once: true
+      when: component_action == "destroy"
+
+# Terraform Blank GKE Resource
+
+- name: Terraform Resource
+  hosts: localhost
+  environment:
+    TF_VAR_workload_identity_enabled: "{{ workload_identity_enabled | default('false')}}"
+    TF_VAR_min_master_version: "{{ min_master_version }}"
+    RESERVE_SUBNET_NAME: "reserve-{{ component_name }}-{{ lookup('env', 'GLOBAL_DEPLOYMENT_ID') }}"
+  tasks:
+    - block:
+        - include_role:
+            name: terraform
+      rescue:
+        - name: Check if reserve subnet exists
+          shell: gcloud compute networks subnets list --project={{ network_project }} --filter="name:{{ reserve_subnet_name }}" --format='value(name)'
+          register: reserve_subnet_check
+
+        - name: Destroy Reserve subnet if it exists
+          shell: gcloud compute networks subnets delete {{ reserve_subnet_name }} --project={{ network_project }} --region={{ region }} -q
+          when: reserve_subnet_check.stdout != ''
+
+        - include_role:
+            name: terraform
+      vars:
+        component_type: gke
+        tf_action: "{{ component_action }}"
+        tfvar_environment: "{{ tfvar_environment }}"
+        component_name: "{{ component_name }}"
+        tf_var_file: "{{ lookup('env', 'WORKSPACE') }}/terraform/components/_environment/{{ tfvar_environment }}"
+        region: "{{ (lookup('file', '{{ tf_var_file }}') | regex_search('region\\s+=\\s+\\\"(.+)\\\"', '\\1'))[0] }}"
+        tfvar_scheduler_group: "{{ scheduler_group | default('primary') }}"
+        reserve_subnet_name: "reserve-{{ component_name }}-{{ lookup('env', 'GLOBAL_DEPLOYMENT_ID') }}"
+        network_project: "{{ lookup('env', 'GCP_HOSTED_PROJECT_ID') }}"
+      when: should_run_tf
+
+
+# Provision Bastion for GKE Connectivity
+- name: Provision Bastion Proxy
+  hosts: "{{ group_bastion | default('_bastion') }}"
+  gather_facts: no
+  tasks:
+    - block:
+        - name: Provision SSH Key on Resource
+          include_role:
+            name: bastion_gke_proxy
+      when: hostvars['localhost'].should_deploy
+      ignore_errors: yes
+
+
+- name: Execute helm & Clean Bastion Sock5 Proxy
+  hosts: "{{ group_gke | default('_gke') }}"
+  any_errors_fatal: true
+  connection: local
+  vars:
+    namespace: kube-system
+    env_vars:
+      http_proxy: "{{ hostvars[groups[group_bastion | default('_bastion')][0]]['BASTION_PROXY'] }}"
+      https_proxy: "{{ hostvars[groups[group_bastion | default('_bastion')][0]]['BASTION_PROXY'] }}"
+      KUBECONFIG: "{{lookup('env', 'WORKSPACE')}}/kubeconfig{{ tenantID | default('') }}{{ component_suffix | default('') }}"
+  tasks:
+    - meta: end_host
+      when: not hostvars['localhost'].should_deploy
+
+    - name: Fetch Kubeconfig
+      include_role:
+        name: helm
+        tasks_from: auth-gke-cluster
+      run_once: true
+
+    - name: Apply the ip-masq-agent configmap
+      include_role:
+        name: ip-masq-agent
+      run_once: true
+
+    - name: Install Istio
+      include_role:
+        name: istio
+      run_once: true
+      vars:
+        istio_install: true
+        enable_kiali: false
+        enable_grafana: false
+        required_istio_version: "{{ infrastructure_istio_version | default('1.7.3') }}"
+        enable_job_sidecar: "{{ infrastructure_istio_enable_job_sidecar | bool }}"
+        istio_mtls_strict_mode: "{{ enable_istio_strict_mtls_mode | bool }}"
+      when: (istio_disabled is not defined) or (istio_disabled == false)
+
+- name: Execute helm for ClamAV
+  hosts: "{{ group_gke | default('_gke') }}"
+  any_errors_fatal: true
+  connection: local
+  vars:
+    chart_repo: "csp-mgmt-dev-helm-repo"
+    chart_repo_path: "gs://csp-helm-repo-mgmt-dev/release"
+    chart_name: "fin-clamav-helm"
+    chart_version: "1.0.2"
+    namespace: "clamav"
+    release_name: "{{ chart_name }}"
+    chart_version_str: "{{ ' --devel'  if chart_version is not defined or chart_version | length == 0 else ' --version ' + chart_version }}"
+    chart_install_timeout: "{{ '900s' if chart_name is search('prestage-synthetic-tests') else '1420s'}}"
+    env_vars:
+      http_proxy: "{{ hostvars[groups[group_bastion | default('_bastion')][0]]['BASTION_PROXY'] }}"
+      https_proxy: "{{ hostvars[groups[group_bastion | default('_bastion')][0]]['BASTION_PROXY'] }}"
+      KUBECONFIG: "{{lookup('env', 'WORKSPACE')}}/kubeconfig{{ tenantID | default('') }}{{ component_suffix | default('') }}"
+  tasks:
+    - meta: end_host
+      when:  not hostvars['localhost'].should_deploy
+
+    - name: Fetch Kubeconfig and setup namespace
+      include_role:
+        name: helm
+        tasks_from: auth-gke-cluster
+      run_once: true
+
+    - name: Apply priorityclass object
+      include_role:
+        name: helm
+        tasks_from: create_priority_class
+      run_once: true
+
+    - name: Pull the helm chart and untar
+      include_role:
+        name: helm
+        tasks_from: helm_pull
+      run_once: true
+
+    - name: Execute helm chart
+      include_role:
+        name: helm
+        tasks_from: helm_upgrade
+      run_once: true
+
+- name: deploy aqua enforcer
+  hosts: "{{ group_gke | default('_gke') }}"
+  connection: local
+  vars:
+    high_risk: "{{ lookup('env', 'AQUA_ENFORCER_HIGH_RISK') }}"
+    env_vars:
+      http_proxy: "{{ hostvars[groups[group_bastion | default('_bastion')][0]]['BASTION_PROXY'] }}"
+      https_proxy: "{{ hostvars[groups[group_bastion | default('_bastion')][0]]['BASTION_PROXY'] }}"
+      KUBECONFIG: "{{lookup('env', 'WORKSPACE')}}/kubeconfig{{ tenantID | default('') }}{{ component_suffix | default('') }}"
+  tasks:
+    - name: deploy aqua
+      include_role:
+        name: aqua_enforcer
+      run_once: true
+      when:
+        - not ( lookup('env', 'AQUA_ENFORCER_DEPLOYMENT_DEFAULT') == "disabled" )
+        - ( lookup('env', 'AQUA_ENFORCER_DEPLOYMENT_DEFAULT') == "true" and not ( aqua_enforcer_override | bool ) ) or ( ( aqua_enforcer_override | bool ) and ( aqua_enforcer | bool ) )
+
+- name: Clean Bastion Sock5 Proxy
+  hosts: localhost
+  tasks:
+    - include_role:
+        name: bastion_gke_proxy
+        tasks_from: bastion_gke_proxy_clean
+      when: hostvars['localhost'].should_deploy
+
+- name: Label Resource
+  hosts: "{{ group_bastion | default('_bastion') }}"
+  gather_facts: no
+  tasks:
+    - name: Label resource version
+      include_role:
+        name: infrastructure_version
+        apply:
+          delegate_to: localhost
+      vars:
+        instance_type: "gke"
+      when: hostvars['localhost'].should_deploy
