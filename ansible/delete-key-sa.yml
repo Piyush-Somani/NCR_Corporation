@@ -1,0 +1,13 @@
+---
+- name: Role for deleting oldest elasticsearch key
+  hosts: "{{ group_elasticsearch | default('_elasticsearch') }}"
+  gather_facts: no
+  vars:
+    service_account_name: "{{ es_name }}{{ lookup('env', 'GLOBAL_DEPLOYMENT_ID') }}"
+    project_id: "{{ lookup('env', 'GLOBAL_GCP_PROJECT') }}"
+  tasks:
+  - name: Delete the oldest service account key
+    include_role:
+      name: key_rotation
+      tasks_from: delete_service_account_key.yml
+    when: component_action == "apply"
