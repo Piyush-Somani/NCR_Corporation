@@ -1,0 +1,5 @@
+- name: Update Compute ssh Metadata key values
+  hosts: localhost
+  connection: local
+  roles:
+    - compute_ssh_key
