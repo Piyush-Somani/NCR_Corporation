@@ -1,0 +1,137 @@
+---
+
+- name: Authenticate To Playbook Dependencies And Gather Facts
+  hosts: "{{ group_bastion | default('_bastion') }}"
+  gather_facts: no
+  tasks:
+  - name: Provision SSH Key on Resource
+    include_role:
+      name: compute_ssh_key
+    when:
+      - component_action == "apply"
+
+- name: Authorize Playbook Dependencies
+  hosts:
+    - "{{ group_elasticsearch | default('_elasticsearch') }}"
+  gather_facts: no
+  tasks:
+  - name: Provision SSH Key on Resource
+    include_role:
+      name: compute_ssh_key
+    when:
+      - component_action == "apply"
+
+- name: Authorize Playbook Dependencies
+  hosts:
+    - "{{ group_cassandra | default('_cassandra') }}"
+  gather_facts: no
+  tasks:
+  - name: Provision SSH Key on Resource
+    include_role:
+      name: compute_ssh_key
+    when:
+      - component_action == "apply"
+
+- name: Authorize Playbook Dependencies
+  hosts: localhost
+  connection: local
+  vars:
+    gcp_secret_project: "{{ lookup('env', 'GLOBAL_GCP_PROJECT') }}"
+    gcp_secret_deployment_id: "{{ lookup('env', 'GLOBAL_DEPLOYMENT_ID') }}"
+  gather_facts: no
+  tasks:
+  - name: Load ncrtxapp credentials from GCP secrets
+    include_role:
+      name: secret_management
+      tasks_from: load_gcp_userpass.yml
+    vars:
+      userpass_id: ncrtxapp
+
+- name: Playbook to enable cron restore job on Elasticsearch DR Systems
+  hosts: "{{ group_elasticsearch | default('_elasticsearch') }}"
+  gather_facts: no
+  vars:
+    es_home: "/usr/share/elasticsearch"
+    es_security_username: "{{ hostvars['localhost']['userpass_ncrtxapp_userid'] }}"
+    es_security_password: "{{ hostvars['localhost']['userpass_ncrtxapp_password'] }}"
+    cloud_bucket_url: "backup{{ lookup('env', 'GLOBAL_DEPLOYMENT_ID') }}"
+    elastic_yml_path: "/etc/elasticsearch/elasticsearch.yml"
+    work_dir: "/root/ncr/scripts"
+    service_account_name: "es-dr"
+    project_id: "{{ lookup('env', 'GLOBAL_GCP_PROJECT') }}"
+    cluster_name: "elastic-cluster"
+    cloud_bucket_logs_path: "backup/elastic-search/{{ cluster_name }}-logs"
+    cloud_bucket_base_path: "backup/elastic-search/{{ cluster_name }}"
+    cron_job_file: "restore_es_snapshot"
+    cron_job_schedule:
+        trigger_minutes: "*/10"
+        trigger_hours: "*"
+        trigger_day: "*"
+        trigger_weekday: "*"
+        trigger_month: "*"
+    tf_var_file: "{{ lookup('env', 'WORKSPACE') }}/terraform/components/_environment/{{ tfvar_environment }}"
+    region: "{{ (lookup('file', '{{ tf_var_file }}') | regex_search('region\\s+=\\s+\\\"(.+)\\\"', '\\1'))}}"
+    compute_region: "{{ region | replace('[u' , '') | replace(']', '') | replace(\"'\",'')}}"
+  tasks:
+  - name: Enable back the restore job on DR system
+    become: yes
+    cron:
+      name: Cron job for restore_es_snapshot
+      minute: "{{ cron_job_schedule.trigger_minutes }}"
+      hour: "{{ cron_job_schedule.trigger_hours }}"
+      job: "{{ work_dir }}/restore_es_snapshot.sh"
+      user: root
+      disabled: no
+    when:
+      - component_action == 'apply'
+      - rotate_dr_keys is not defined and glb_region != compute_region
+      - cron_job_file == "restore_es_snapshot"
+  
+  - name: Check UUID in GCS snapshot Repo
+    include_role:
+      name: data_recovery_elasticsearch_cron
+      tasks_from: register_gcs_repo.yml
+    when:
+      - component_action == 'apply' 
+      - disaster_recovery != "disabled"
+
+- name: Playbook to enable cron restore job on Cassandra DR Systems
+  hosts: "{{ group_cassandra | default('_cassandra') }}"
+  gather_facts: no
+  vars:
+    cron_job_file: "restore_cas_snapshot"
+    cron_job_file_path: "/root/ncr/scripts"
+    data_center: "DC1"
+    debug_mode: "FALSE"
+    cron_job_schedule:
+      trigger_minutes: "0,20,40"
+      trigger_hours: "*"
+      trigger_day: "*"
+      trigger_weekday: "*"
+      trigger_month: "*"
+    role:
+      username: "{{ hostvars['localhost']['userpass_ncrtxapp_userid'] }}"
+      password: "{{ hostvars['localhost']['userpass_ncrtxapp_password'] }}"
+    backup_bucket_name: "backup{{ lookup('env', 'GLOBAL_DEPLOYMENT_ID') }}"
+    cassandra_data_map: "$NODE1_ENTRY $NODE2_ENTRY $NODE3_ENTRY"
+    cassandra_ca_cert: "{{ hostvars['localhost']['internal_ca_cert'] }}"
+    client_encryption_options:
+        keystore: /etc/cassandra/default.conf/.keystore
+        keystore_password: "{{ issued_keystore_password }}"
+    tf_var_file: "{{ lookup('env', 'WORKSPACE') }}/terraform/components/_environment/{{ tfvar_environment }}"
+    region: "{{ (lookup('file', '{{ tf_var_file }}') | regex_search('region\\s+=\\s+\\\"(.+)\\\"', '\\1'))}}"
+    compute_region: "{{ region | replace('[u' , '') | replace(']', '') | replace(\"'\",'')}}"
+  tasks:
+  - name: Enable the restore job on DR system
+    become: yes
+    cron:
+      name: Cron job for restore_cas_snapshot
+      minute: "{{ cron_job_schedule.trigger_minutes }}"
+      hour: "{{ cron_job_schedule.trigger_hours }}"
+      job: "{{ cron_job_file_path }}/restore_cas_snapshot.sh"
+      user: root
+      disabled: no
+    when:
+      - component_action == "apply"
+      - glb_region is defined and glb_region != compute_region
+      - cron_job_file == "restore_cas_snapshot"
