@@ -1,0 +1,101 @@
+---
+# Wait for required Nodes to be SSH Available #
+
+- name: Wait For SSH To Be Available - Bastion (Timeout 900s)
+  hosts:
+    - "{{ group_bastion | default('_bastion') }}"
+  gather_facts: no
+  tasks:
+    - name: Wait for system to become Reachable
+      wait_for_connection:
+        timeout: 900
+
+# Gather Facts on All Endpoints  #
+
+
+# provision helm chart #
+
+- name: Provision Bastion Proxy
+  hosts: "{{ group_bastion | default('_bastion') }}"
+  roles:
+    - role: bastion_gke_proxy
+  ignore_errors: yes
+
+- name: Execute helm & Clean Bastion Sock5 Proxy
+  hosts: "{{ group_gke | default('_gke') }}"
+  any_errors_fatal: true
+  connection: local
+  vars:
+    chart_repo: "csp-mgmt-dev-helm-repo"
+    chart_repo_path: "gs://csp-helm-repo-mgmt-dev/release"
+    chart_name: "dynatrace-operator"
+    chart_version: "1.1.0"
+    namespace: "dynatrace"
+    API_TOKEN: "{{lookup('env', 'DYNATRACE_API_TOKEN')}}"
+    OPERATOR_TOKEN: "{{lookup('env', 'DYNATRACE_OPERATOR_TOKEN')}}"
+    PAAS_TOKEN: "{{lookup('env', 'DYNATRACE_PAAS_TOKEN')}}"
+    TENANT_ID: "{{lookup('env', 'DYNATRACE_TENANT_ID')}}"
+    release_name: "{{ chart_name }}"
+    extra_set_args: ""
+    chart_version_str: "{{ ' --devel'  if chart_version is not defined or chart_version | length == 0 else ' --version ' + chart_version }}"
+    chart_install_timeout: "{{ '900s' if chart_name is search('prestage-synthetic-tests') else '420s'}}"
+    env_vars:
+      http_proxy: "{{ hostvars[groups[group_bastion | default('_bastion')][0]]['BASTION_PROXY'] }}"
+      https_proxy: "{{ hostvars[groups[group_bastion | default('_bastion')][0]]['BASTION_PROXY'] }}"
+      KUBECONFIG: "{{lookup('env', 'WORKSPACE')}}/kubeconfig{{ tenantID | default('') }}{{ component_suffix | default('') }}"
+  tasks:
+    - meta: end_host
+      when: component_action == "plan"
+    
+    - name: Fetch Kubeconfig and setup namespace
+      include_role:
+        name: helm
+        tasks_from: auth-gke-cluster
+      run_once: true
+
+    - name: Pull the helm chart and untar
+      include_role:
+        name: helm
+        tasks_from: helm_pull
+      run_once: true
+
+    - block:
+      - name: Execute helm chart
+        include_role:
+          name: helm
+          tasks_from: helm_upgrade
+        run_once: true
+
+      - name: Create Activegate and One-Agents
+        include_role:
+          name: dynatrace_operator
+          tasks_from: apply_dynakube 
+        run_once: true   
+      when: component_action == "apply"
+
+    - block:
+      - name: Destroy dyntrace init-container from the deployments and statefulsets
+        include_role:
+          name: helm
+          tasks_from: destroy_dynatrace
+        run_once: true
+        
+      - name: Uninstall dynatrace
+        include_role:
+          name: helm
+          tasks_from: helm_uninstall
+        run_once: true
+
+      - name: Delete namespace
+        include_role:
+          name: gke_namespace_provision
+          tasks_from: delete_namespace
+        run_once: true
+      when: component_action == "destroy"
+        
+- name: Clean Bastion Sock5 Proxy
+  hosts: localhost
+  tasks:
+    - include_role:
+        name: bastion_gke_proxy
+        tasks_from: bastion_gke_proxy_clean
