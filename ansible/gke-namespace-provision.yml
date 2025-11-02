@@ -1,0 +1,117 @@
+---
+
+- name: Authenticate To Playbook Dependencies And Gather Facts
+  hosts: "{{ group_bastion | default('_bastion') }}"
+  gather_facts: no
+  tasks:
+    - name: Provision SSH Key on Resource
+      include_role:
+        name: compute_ssh_key
+      when: (component_action == "apply" or component_action == "destroy") and (namespaceSSH is not defined or namespaceSSH == "true")
+    
+- name: Provision Bastion Proxy
+  hosts: "{{ group_bastion | default('_bastion') }}"
+  gather_facts: no
+  tasks:
+    - block:
+        - name: Provision SSH Key on Resource
+          include_role:
+            name: bastion_gke_proxy
+      when: component_action == "apply" or component_action == "destroy"
+      ignore_errors: yes
+      
+- name: get kubeconfig for destroy
+  hosts: "{{ group_gke | default('_gke') }}"
+  connection: local
+  vars:
+    skipNS: true
+    env_vars:
+      http_proxy: "{{ hostvars[groups[group_bastion | default('_bastion')][0]]['BASTION_PROXY'] }}"
+      https_proxy: "{{ hostvars[groups[group_bastion | default('_bastion')][0]]['BASTION_PROXY'] }}"
+      KUBECONFIG: "{{lookup('env', 'WORKSPACE')}}/kubeconfig{{ component_suffix | default('') }}{{ namespace }}"
+  tasks:
+    - block:
+        - name: Fetch Kubeconfig
+          include_role:
+            name: helm
+            tasks_from: auth-gke-cluster
+          run_once: true
+      when: component_action == "destroy"
+ 
+ 
+- name: check for empty inventory
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    env_vars:
+      KUBECONFIG: "{{lookup('env','WORKSPACE')}}/kubeconfig{{ component_suffix | default('') }}{{ namespace }}"
+  tasks:
+    - block:
+      - name: Fail if inventory is empty
+        shell: "ansible-inventory -i {{lookup('env','WORKSPACE')}}/ansible/inventory/ --graph"
+        register: flag
+        failed_when: flag.stdout_lines[1] == "  |--@ungrouped:"
+          
+- name: Execute gke_namespace_provision
+  hosts: "{{ group_gke | default('_gke') }}"
+  any_errors_fatal: true
+  connection: local
+  vars:
+    env_vars:
+      http_proxy: "{{ hostvars[groups[group_bastion | default('_bastion')][0]]['BASTION_PROXY'] }}"
+      https_proxy: "{{ hostvars[groups[group_bastion | default('_bastion')][0]]['BASTION_PROXY'] }}"
+      KUBECONFIG: "{{lookup('env','WORKSPACE')}}/kubeconfig{{ component_suffix | default('') }}{{ namespace }}"
+  tasks:
+    - block:
+        - name: gke namespace provision
+          include_role:
+            name: gke_namespace_provision
+          run_once: true
+      when: component_action == "apply"
+      
+    - block:
+        - name: gke namespace provision
+          include_role:
+            name: gke_namespace_provision
+            tasks_from: delete_namespace.yml
+          run_once: true
+      when: component_action == "destroy"
+      
+- name: Authorize Playbook Dependencies
+  hosts: 
+    - "{{ group_nfsserver | default('_nfsserver') }}"
+  gather_facts: no
+  tasks:
+  - name: Provision SSH Key on Resource
+    include_role:
+      name: compute_ssh_key
+    when: component_action == "destroy"
+      
+- name: Delete nfs data
+  hosts: "{{ group_nfsserver | default('_nfsserver') }}"
+  gather_facts: yes
+  any_errors_fatal: true
+  vars:
+    cluster_project: "{{ lookup('env', 'GLOBAL_GCP_PROJECT') }}"
+    cluster_region: "{{ hostvars[groups[group_gke | default('_gke')]]['networkInterfaces'][0]['subnetwork']['region'] }}"
+    env_vars:
+      http_proxy: "{{ hostvars[groups[group_bastion | default('_bastion')][0]]['BASTION_PROXY'] }}"
+      https_proxy: "{{ hostvars[groups[group_bastion | default('_bastion')][0]]['BASTION_PROXY'] }}"
+      KUBECONFIG: "{{lookup('env','WORKSPACE')}}/kubeconfig{{ component_suffix | default('') }}{{ namespace }}"
+  tasks:
+    - block:
+        - name: nfs namespace delete
+          include_role:
+            name: nfs_server_provision_k8s_volumes
+            tasks_from: delete_nfs_volumes.yml
+      when: component_action == "destroy"
+
+- name: Clean Bastion Sock5 Proxy
+  hosts: localhost
+  tasks:
+    - block:
+        - include_role:
+            name: bastion_gke_proxy
+            tasks_from: bastion_gke_proxy_clean
+      when: component_action == "apply" or component_action == "destroy"
