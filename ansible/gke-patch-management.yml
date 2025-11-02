@@ -1,0 +1,10 @@
+---
+# Patching the GKE Instance
+- name: Started patching GKE Components
+  hosts: localhost
+  connection: local
+  tasks:
+  - name: GKE patching
+    include_role:
+      name: gke_system_patch
+    when: component_action == "apply"
