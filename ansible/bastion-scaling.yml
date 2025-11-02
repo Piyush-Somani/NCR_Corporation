@@ -1,0 +1,30 @@
+- name: Bastion VM - {{ action }}
+  hosts: localhost
+  gather_facts: no
+  ignore_errors: true
+  tasks:
+    - name: Get bastion Information
+      connection: local
+      shell: gcloud compute instances list --project {{ lookup('env', 'GLOBAL_GCP_PROJECT') }} 
+       --filter="Labels.deployment_id={{ lookup('env', 'GLOBAL_DEPLOYMENT_ID') }} AND name:(winbastion1{{ lookup('env', 'GLOBAL_DEPLOYMENT_ID') }}, winbastion-pr1{{ lookup('env', 'GLOBAL_DEPLOYMENT_ID') }}, bastion-dr1{{ lookup('env', 'GLOBAL_DEPLOYMENT_ID') }}, bastion1{{ lookup('env', 'GLOBAL_DEPLOYMENT_ID') }}, bastion-pr1{{ lookup('env', 'GLOBAL_DEPLOYMENT_ID') }}, bastion-dr1{{ lookup('env', 'GLOBAL_DEPLOYMENT_ID') }})" --format="value(NAME,ZONE,STATUS)"
+      register: bastion_vm_info
+
+    - set_fact:
+        vm_details: "{{ vm_details | default([]) + [{'vm_name': item.split('\t')[0], 'vm_zone': item.split('\t')[1], 'vm_status': item.split('\t')[2]}] }}"
+      loop: "{{ bastion_vm_info.stdout_lines }}"
+
+    - set_fact:
+        current_status: "RUNNING"
+      when: action == "stop"
+
+    - set_fact:
+        current_status: "TERMINATED"
+      when: action == "start"
+        
+    - name: Bastion VM - {{ action }}
+      connection: local
+      shell: gcloud compute instances {{ action }} {{ item.vm_name }} --project {{ lookup('env', 'GLOBAL_GCP_PROJECT') }} --zone {{ item.vm_zone }}
+      loop: "{{ vm_details }}"
+      when: 
+        - vm_details|length > 0
+        - item.vm_status == current_status
