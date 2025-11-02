@@ -1,0 +1,26 @@
+- name: Remove current build Compute ssh Metadata key values
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  tasks:
+    - include_role:
+        name: compute_ssh_key
+        tasks_from: delete
+      when: deleteAll is undefined or deleteAll | bool == false
+
+    - include_role:
+        name: compute_ssh_key
+        tasks_from: delete_all
+      when: deleteAll is defined and deleteAll | bool == true
+
+- name: Execute helm & Clean Bastion Sock5 Proxy
+  hosts: "{{ group_gke | default('_gke') }}"
+  any_errors_fatal: true
+  connection: local
+  gather_facts: no
+  tasks:
+    - name: Remove Redis Certificate
+      file:
+        path: redis_certificate.pem
+        state: absent
+      run_once: true
