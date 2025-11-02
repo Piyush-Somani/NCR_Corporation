@@ -1,0 +1,36 @@
+---
+# Block to create kubernetes secret from GCP Service Account
+- name: Create kubernetes secret from GCP Service Account
+  hosts: localhost
+  connection: local
+  environment:
+    TF_VAR_k8_directory: "{{ lookup('env', 'WORKSPACE') + '/k8_directory/' }}"
+    TF_VAR_service_account_list: "dt"
+    TF_VAR_branding_project: "{{ lookup('env', 'GLOBAL_BRANDING_PROJECT') }}"
+  vars:
+    component_type: serviceaccount
+    tf_action: "{{ component_action }}"
+    tfvar_environment: "{{ tfvar_environment }}"
+    component_name: "serviceaccount"
+    deployment_component_tfvar: "dynatrace-service-account.tfvars"
+    service_account_list: "dt"
+  tasks:
+    - name: Check if file.json exists
+      stat:
+        path: "{{ lookup('env', 'WORKSPACE') + '/serviceAccounts/' }}dt.json"
+      register: file_exists
+    - block:
+        - name: Terraform to provision GCP SA Accounts
+          include_role:
+            name: terraform
+      rescue:
+        - name: recover SA
+          include_role:
+            name: service_account_recovery
+      when: not file_exists.stat.exists
+    - copy:
+        src: "{{ lookup('env', 'WORKSPACE') + '/k8_directory/' }}{{ item }}"
+        dest: "{{ lookup('env', 'WORKSPACE') + '/serviceAccounts/' }}{{ item }}.json"
+      loop:
+        - "dt"
+      when: component_action == "apply" and not file_exists.stat.exists
